@@ -11,7 +11,15 @@ struct AnthropicResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAIResponse {
-    choices: Vec<Choice>,
+    choices: Option<Vec<Choice>>,
+    error: Option<OpenAIError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenAIError {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,7 +171,18 @@ async fn get_openai_command(query: &str, config: &Config) -> Result<(String, boo
         .json::<OpenAIResponse>()
         .await?;
 
-    parse_ai_response(&response.choices[0].message.content)
+    if let Some(error) = response.error {
+        return Err(anyhow!("OpenAI API error: {}", error.message));
+    }
+
+    let choices = response.choices
+        .ok_or_else(|| anyhow!("OpenAI API returned no choices"))?;
+
+    if choices.is_empty() {
+        return Err(anyhow!("OpenAI API returned empty choices"));
+    }
+
+    parse_ai_response(&choices[0].message.content)
 }
 
 async fn get_openai_error(command: &str, stdout: &str, stderr: &str, config: &Config) -> Result<String> {
@@ -206,7 +225,18 @@ async fn get_openai_error(command: &str, stdout: &str, stderr: &str, config: &Co
         .json::<OpenAIResponse>()
         .await?;
 
-    Ok(response.choices[0].message.content.trim().to_string())
+    if let Some(error) = response.error {
+        return Err(anyhow!("OpenAI API error: {}", error.message));
+    }
+
+    let choices = response.choices
+        .ok_or_else(|| anyhow!("OpenAI API returned no choices"))?;
+
+    if choices.is_empty() {
+        return Err(anyhow!("OpenAI API returned empty choices"));
+    }
+
+    Ok(choices[0].message.content.trim().to_string())
 }
 
 fn parse_ai_response(response: &str) -> Result<(String, bool)> {

@@ -1,9 +1,9 @@
 use anyhow::Result;
+use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use dirs::home_dir;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -74,7 +74,7 @@ impl Config {
                 provider: AIProvider::Anthropic,
                 anthropic_api_key: Some("your-anthropic-api-key-here".to_string()),
                 openai_api_key: Some("your-openai-api-key-here".to_string()),
-                model: "".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
                 max_tokens: 150,
                 temperature: 0.7,
             },
@@ -88,20 +88,21 @@ impl Config {
                     "reboot",
                     "> /dev",
                     "format",
-
                     // PowerShell dangerous commands
                     "Remove-Item -Recurse",
                     "Format-Volume",
                     "Stop-Computer",
                     "Restart-Computer",
                     "Remove-Item -Force",
-
                     // CMD dangerous commands
                     "rmdir /s",
                     "format ",
                     "del /f",
                     "shutdown",
-                ].iter().map(|&s| s.to_string()).collect(),
+                ]
+                .iter()
+                .map(|&s| s.to_string())
+                .collect(),
                 require_confirmation: true,
                 max_output_size: 1024 * 1024, // 1MB
                 allowed_directories: vec!["~".to_string(), "./".to_string()],
