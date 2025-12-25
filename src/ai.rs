@@ -1,17 +1,38 @@
-use crate::config::{Config, AIProvider};
+use crate::config::{AIProvider, Config};
 use crate::shell::ShellType;
-use anyhow::{Result, anyhow};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, AUTHORIZATION};
+use anyhow::{anyhow, Result};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// Anthropic Types
+// ============================================================================
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AnthropicResponse {
-    content: Vec<Content>,
+    content: Option<Vec<AnthropicContent>>,
+    error: Option<AnthropicError>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct AnthropicContent {
+    text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AnthropicError {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: Option<String>,
+}
+
+// ============================================================================
+// OpenAI Types
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
 struct OpenAIResponse {
-    choices: Option<Vec<Choice>>,
+    choices: Option<Vec<OpenAIChoice>>,
     error: Option<OpenAIError>,
 }
 
@@ -23,76 +44,81 @@ struct OpenAIError {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Choice {
-    message: Message,
+struct OpenAIChoice {
+    message: OpenAIMessage,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Message {
+struct OpenAIMessage {
     content: String,
 }
 
+// ============================================================================
+// Gemini Types
+// ============================================================================
+
 #[derive(Debug, Serialize, Deserialize)]
-struct Content {
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+    error: Option<GeminiError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiCandidate {
+    content: GeminiContent,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiPart {
     text: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiError {
+    message: String,
+    status: Option<String>,
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 pub async fn get_command_suggestion(query: &str, config: &Config) -> Result<(String, bool)> {
     match config.ai.provider {
         AIProvider::Anthropic => get_anthropic_command(query, config).await,
         AIProvider::OpenAI => get_openai_command(query, config).await,
+        AIProvider::Gemini => get_gemini_command(query, config).await,
     }
 }
 
-pub async fn get_error_suggestion(command: &str, stdout: &str, stderr: &str, config: &Config) -> Result<String> {
+pub async fn get_error_suggestion(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<String> {
     match config.ai.provider {
         AIProvider::Anthropic => get_anthropic_error(command, stdout, stderr, config).await,
         AIProvider::OpenAI => get_openai_error(command, stdout, stderr, config).await,
+        AIProvider::Gemini => get_gemini_error(command, stdout, stderr, config).await,
     }
 }
 
-async fn get_anthropic_error(command: &str, stdout: &str, stderr: &str, config: &Config) -> Result<String> {
-    let api_key = config.ai.anthropic_api_key.as_ref()
-        .ok_or_else(|| anyhow!("Anthropic API key not configured"))?;
-
-    let client = reqwest::Client::new();
-    let mut headers = HeaderMap::new();
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-    let shell_type = ShellType::detect();
-    let shell_name = shell_type.get_shell_name();
-
-    let prompt = format!(
-        "Analyze this {} command result:\nCommand: {}\nStdout: {}\nStderr: {}\n\
-         Explain what happened and suggest improvements. Be specific and brief.",
-        shell_name, command, stdout, stderr
-    );
-
-    let response = client
-        .post("https://api.anthropic.com/v1/messages")
-        .headers(headers)
-        .json(&serde_json::json!({
-            "model": &config.ai.model,
-            "max_tokens": config.ai.max_tokens,
-            "system": "You are Spren, a helpful command-line assistant. Provide clear and concise explanations.",
-            "messages": [{
-                "role": "user",
-                "content": prompt
-            }]
-        }))
-        .send()
-        .await?
-        .json::<AnthropicResponse>()
-        .await?;
-
-    Ok(response.content[0].text.trim().to_string())
-}
+// ============================================================================
+// Anthropic Implementation
+// ============================================================================
 
 async fn get_anthropic_command(query: &str, config: &Config) -> Result<(String, bool)> {
-    let api_key = config.ai.anthropic_api_key.as_ref()
-        .ok_or_else(|| anyhow!("Anthropic API key not configured"))?;
+    let api_key = config
+        .ai
+        .anthropic_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("Anthropic API key not configured. Set 'anthropic_api_key' in config."))?;
 
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
@@ -103,18 +129,14 @@ async fn get_anthropic_command(query: &str, config: &Config) -> Result<(String, 
     let shell_type = ShellType::detect();
     let shell_name = shell_type.get_shell_name();
 
-    let prompt = format!(
-        "Convert this natural language query into a {} command: '{}'. \
-         Also analyze if this command could be dangerous (e.g., system-wide deletions, \
-         format operations, etc). You must respond in exactly this format:\nDANGEROUS: true/false\nCOMMAND: <command>",
-        shell_name, query
-    );
+    let prompt = build_command_prompt(shell_name, query);
+    let model = get_model_or_default(config, "claude-sonnet-4-20250514");
 
     let response = client
         .post("https://api.anthropic.com/v1/messages")
         .headers(headers)
         .json(&serde_json::json!({
-            "model": &config.ai.model,
+            "model": model,
             "max_tokens": config.ai.max_tokens,
             "system": "You are Spren, a helpful command-line assistant. Respond only in the specified format.",
             "messages": [{
@@ -127,34 +149,109 @@ async fn get_anthropic_command(query: &str, config: &Config) -> Result<(String, 
         .json::<AnthropicResponse>()
         .await?;
 
-    parse_ai_response(&response.content[0].text)
+    if let Some(error) = response.error {
+        return Err(anyhow!("Anthropic API error: {}", error.message));
+    }
+
+    let content = response
+        .content
+        .ok_or_else(|| anyhow!("Anthropic API returned no content"))?;
+
+    if content.is_empty() {
+        return Err(anyhow!("Anthropic API returned empty content"));
+    }
+
+    parse_ai_response(&content[0].text)
 }
 
-async fn get_openai_command(query: &str, config: &Config) -> Result<(String, bool)> {
-    let api_key = config.ai.openai_api_key.as_ref()
-        .ok_or_else(|| anyhow!("OpenAI API key not configured"))?;
+async fn get_anthropic_error(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<String> {
+    let api_key = config
+        .ai
+        .anthropic_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("Anthropic API key not configured. Set 'anthropic_api_key' in config."))?;
 
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", api_key))?);
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    headers.insert("x-api-key", HeaderValue::from_str(api_key)?);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     let shell_type = ShellType::detect();
     let shell_name = shell_type.get_shell_name();
 
-    let prompt = format!(
-        "Convert this natural language query into a {} command: '{}'. \
-         Also analyze if this command could be dangerous (e.g., system-wide deletions, \
-         format operations, etc). You must respond in exactly this format:\nDANGEROUS: true/false\nCOMMAND: <command>",
-        shell_name, query
-    );
+    let prompt = build_error_prompt(shell_name, command, stdout, stderr);
+    let model = get_model_or_default(config, "claude-sonnet-4-20250514");
 
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .headers(headers)
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": config.ai.max_tokens,
+            "system": "You are Spren, a helpful command-line assistant. Provide clear and concise explanations.",
+            "messages": [{
+                "role": "user",
+                "content": prompt
+            }]
+        }))
+        .send()
+        .await?
+        .json::<AnthropicResponse>()
+        .await?;
+
+    if let Some(error) = response.error {
+        return Err(anyhow!("Anthropic API error: {}", error.message));
+    }
+
+    let content = response
+        .content
+        .ok_or_else(|| anyhow!("Anthropic API returned no content"))?;
+
+    if content.is_empty() {
+        return Err(anyhow!("Anthropic API returned empty content"));
+    }
+
+    Ok(content[0].text.trim().to_string())
+}
+
+// ============================================================================
+// OpenAI Implementation
+// ============================================================================
+
+async fn get_openai_command(query: &str, config: &Config) -> Result<(String, bool)> {
+    let api_key = config
+        .ai
+        .openai_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("OpenAI API key not configured. Set 'openai_api_key' in config."))?;
+
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", api_key))?,
+    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let shell_type = ShellType::detect();
+    let shell_name = shell_type.get_shell_name();
+
+    let prompt = build_command_prompt(shell_name, query);
+    let model = get_model_or_default(config, "gpt-4o");
+
+    // Use max_completion_tokens for newer models, fall back to max_tokens for compatibility
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .headers(headers)
         .json(&serde_json::json!({
-            "model": &config.ai.model,
-            "max_tokens": config.ai.max_tokens,
+            "model": model,
+            "max_completion_tokens": config.ai.max_tokens,
             "messages": [
                 {
                     "role": "system",
@@ -175,7 +272,8 @@ async fn get_openai_command(query: &str, config: &Config) -> Result<(String, boo
         return Err(anyhow!("OpenAI API error: {}", error.message));
     }
 
-    let choices = response.choices
+    let choices = response
+        .choices
         .ok_or_else(|| anyhow!("OpenAI API returned no choices"))?;
 
     if choices.is_empty() {
@@ -185,30 +283,38 @@ async fn get_openai_command(query: &str, config: &Config) -> Result<(String, boo
     parse_ai_response(&choices[0].message.content)
 }
 
-async fn get_openai_error(command: &str, stdout: &str, stderr: &str, config: &Config) -> Result<String> {
-    let api_key = config.ai.openai_api_key.as_ref()
-        .ok_or_else(|| anyhow!("OpenAI API key not configured"))?;
+async fn get_openai_error(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<String> {
+    let api_key = config
+        .ai
+        .openai_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("OpenAI API key not configured. Set 'openai_api_key' in config."))?;
 
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", api_key))?);
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", api_key))?,
+    );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     let shell_type = ShellType::detect();
     let shell_name = shell_type.get_shell_name();
 
-    let prompt = format!(
-        "Analyze this {} command result:\nCommand: {}\nStdout: {}\nStderr: {}\n\
-         Explain what happened and suggest improvements. Be specific and brief.",
-        shell_name, command, stdout, stderr
-    );
+    let prompt = build_error_prompt(shell_name, command, stdout, stderr);
+    let model = get_model_or_default(config, "gpt-4o");
 
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
         .headers(headers)
         .json(&serde_json::json!({
-            "model": &config.ai.model,
-            "max_tokens": config.ai.max_tokens,
+            "model": model,
+            "max_completion_tokens": config.ai.max_tokens,
             "messages": [
                 {
                     "role": "system",
@@ -229,7 +335,8 @@ async fn get_openai_error(command: &str, stdout: &str, stderr: &str, config: &Co
         return Err(anyhow!("OpenAI API error: {}", error.message));
     }
 
-    let choices = response.choices
+    let choices = response
+        .choices
         .ok_or_else(|| anyhow!("OpenAI API returned no choices"))?;
 
     if choices.is_empty() {
@@ -239,21 +346,184 @@ async fn get_openai_error(command: &str, stdout: &str, stderr: &str, config: &Co
     Ok(choices[0].message.content.trim().to_string())
 }
 
+// ============================================================================
+// Gemini Implementation
+// ============================================================================
+
+async fn get_gemini_command(query: &str, config: &Config) -> Result<(String, bool)> {
+    let api_key = config
+        .ai
+        .gemini_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("Gemini API key not configured. Set 'gemini_api_key' in config."))?;
+
+    let client = reqwest::Client::new();
+
+    let shell_type = ShellType::detect();
+    let shell_name = shell_type.get_shell_name();
+
+    let prompt = format!(
+        "You are Spren, a helpful command-line assistant. Respond only in the specified format.\n\n{}",
+        build_command_prompt(shell_name, query)
+    );
+    let model = get_model_or_default(config, "gemini-2.0-flash");
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, api_key
+    );
+
+    let response = client
+        .post(&url)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&serde_json::json!({
+            "contents": [{
+                "parts": [{
+                    "text": prompt
+                }]
+            }],
+            "generationConfig": {
+                "temperature": config.ai.temperature,
+                "maxOutputTokens": config.ai.max_tokens
+            }
+        }))
+        .send()
+        .await?
+        .json::<GeminiResponse>()
+        .await?;
+
+    if let Some(error) = response.error {
+        return Err(anyhow!("Gemini API error: {}", error.message));
+    }
+
+    let candidates = response
+        .candidates
+        .ok_or_else(|| anyhow!("Gemini API returned no candidates"))?;
+
+    if candidates.is_empty() {
+        return Err(anyhow!("Gemini API returned empty candidates"));
+    }
+
+    if candidates[0].content.parts.is_empty() {
+        return Err(anyhow!("Gemini API returned empty parts"));
+    }
+
+    parse_ai_response(&candidates[0].content.parts[0].text)
+}
+
+async fn get_gemini_error(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<String> {
+    let api_key = config
+        .ai
+        .gemini_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("Gemini API key not configured. Set 'gemini_api_key' in config."))?;
+
+    let client = reqwest::Client::new();
+
+    let shell_type = ShellType::detect();
+    let shell_name = shell_type.get_shell_name();
+
+    let prompt = format!(
+        "You are Spren, a helpful command-line assistant. Provide clear and concise explanations.\n\n{}",
+        build_error_prompt(shell_name, command, stdout, stderr)
+    );
+    let model = get_model_or_default(config, "gemini-2.0-flash");
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, api_key
+    );
+
+    let response = client
+        .post(&url)
+        .header(CONTENT_TYPE, "application/json")
+        .json(&serde_json::json!({
+            "contents": [{
+                "parts": [{
+                    "text": prompt
+                }]
+            }],
+            "generationConfig": {
+                "temperature": config.ai.temperature,
+                "maxOutputTokens": config.ai.max_tokens
+            }
+        }))
+        .send()
+        .await?
+        .json::<GeminiResponse>()
+        .await?;
+
+    if let Some(error) = response.error {
+        return Err(anyhow!("Gemini API error: {}", error.message));
+    }
+
+    let candidates = response
+        .candidates
+        .ok_or_else(|| anyhow!("Gemini API returned no candidates"))?;
+
+    if candidates.is_empty() {
+        return Err(anyhow!("Gemini API returned empty candidates"));
+    }
+
+    if candidates[0].content.parts.is_empty() {
+        return Err(anyhow!("Gemini API returned empty parts"));
+    }
+
+    Ok(candidates[0].content.parts[0].text.trim().to_string())
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn get_model_or_default<'a>(config: &'a Config, default: &'a str) -> &'a str {
+    if config.ai.model.is_empty() {
+        default
+    } else {
+        &config.ai.model
+    }
+}
+
+fn build_command_prompt(shell_name: &str, query: &str) -> String {
+    format!(
+        "Convert this natural language query into a {} command: '{}'. \
+         Also analyze if this command could be dangerous (e.g., system-wide deletions, \
+         format operations, etc). You must respond in exactly this format:\nDANGEROUS: true/false\nCOMMAND: <command>",
+        shell_name, query
+    )
+}
+
+fn build_error_prompt(shell_name: &str, command: &str, stdout: &str, stderr: &str) -> String {
+    format!(
+        "Analyze this {} command result:\nCommand: {}\nStdout: {}\nStderr: {}\n\
+         Explain what happened and suggest improvements. Be specific and brief.",
+        shell_name, command, stdout, stderr
+    )
+}
+
 fn parse_ai_response(response: &str) -> Result<(String, bool)> {
     let lines: Vec<&str> = response.trim().split('\n').collect();
 
-    let dangerous_line = lines.iter()
+    let dangerous_line = lines
+        .iter()
         .find(|line| line.to_lowercase().contains("dangerous"))
-        .ok_or_else(|| anyhow!("Could not find DANGEROUS line in response"))?;
+        .ok_or_else(|| anyhow!("Could not find DANGEROUS line in response: {}", response))?;
 
-    let command_line = lines.iter()
+    let command_line = lines
+        .iter()
         .find(|line| line.to_lowercase().contains("command"))
-        .ok_or_else(|| anyhow!("Could not find COMMAND line in response"))?;
+        .ok_or_else(|| anyhow!("Could not find COMMAND line in response: {}", response))?;
 
     let is_dangerous = dangerous_line.to_lowercase().contains("true");
     let command = command_line
         .replace("COMMAND:", "")
         .replace("Command:", "")
+        .replace("command:", "")
         .trim()
         .to_string();
 
