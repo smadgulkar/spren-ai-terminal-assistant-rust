@@ -16,10 +16,9 @@ mod shell;
 mod tui;
 
 #[derive(Parser)]
-#[command(name = "spren", about = "AI-powered shell assistant")]
+#[command(name = "spren", version, about = "AI-powered shell assistant")]
 struct Args {
     /// Enable interactive TUI mode
-    #[cfg(feature = "tui")]
     #[arg(long)]
     tui: bool,
 
@@ -39,9 +38,15 @@ async fn main() -> Result<()> {
     }
 
     // TUI mode
-    #[cfg(feature = "tui")]
     if args.tui {
+        #[cfg(feature = "tui")]
         return run_tui(config).await;
+
+        #[cfg(not(feature = "tui"))]
+        {
+            eprintln!("TUI mode not available. Rebuild with: cargo build --features tui");
+            return Ok(());
+        }
     }
 
     // Default: simple REPL mode
