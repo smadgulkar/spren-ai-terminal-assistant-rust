@@ -523,13 +523,20 @@ fn parse_ai_response(response: &str) -> Result<(String, bool)> {
 }
 
 fn extract_command(response: &str) -> Result<String> {
-    // Pattern 1: COMMAND:xxx or COMMAND: xxx
+    let response = response.trim();
+
+    // Handle empty response
+    if response.is_empty() {
+        return Err(anyhow!("Empty response from AI"));
+    }
+
+    // Pattern 1: COMMAND:xxx or COMMAND: xxx (case insensitive)
     for line in response.lines() {
         let lower = line.to_lowercase();
         if lower.starts_with("command:") {
             let cmd = line[8..].trim();
             if !cmd.is_empty() {
-                return Ok(cmd.to_string());
+                return Ok(strip_backticks(cmd));
             }
         }
     }
@@ -539,12 +546,25 @@ fn extract_command(response: &str) -> Result<String> {
         if let Some(pos) = line.to_lowercase().find("command:") {
             let cmd = line[pos + 8..].trim();
             if !cmd.is_empty() {
+                return Ok(strip_backticks(cmd));
+            }
+        }
+    }
+
+    // Pattern 3: Look for ```bash or ``` code blocks
+    if let Some(start) = response.find("```") {
+        let after_fence = &response[start + 3..];
+        // Skip language identifier (bash, sh, etc.)
+        let code_start = after_fence.find('\n').map(|i| i + 1).unwrap_or(0);
+        if let Some(end) = after_fence[code_start..].find("```") {
+            let cmd = after_fence[code_start..code_start + end].trim();
+            if !cmd.is_empty() {
                 return Ok(cmd.to_string());
             }
         }
     }
 
-    // Pattern 3: Look for backtick-wrapped command
+    // Pattern 4: Look for single backtick-wrapped command
     if let Some(start) = response.find('`') {
         if let Some(end) = response[start + 1..].find('`') {
             let cmd = &response[start + 1..start + 1 + end];
@@ -554,14 +574,56 @@ fn extract_command(response: &str) -> Result<String> {
         }
     }
 
-    // Pattern 4: If response is just 2 lines, second line is probably the command
+    // Pattern 5: If response is just 2 lines, second line is probably the command
     let lines: Vec<&str> = response.lines().collect();
     if lines.len() == 2 {
         let second = lines[1].trim();
         if !second.to_lowercase().starts_with("dangerous") {
-            return Ok(second.to_string());
+            return Ok(strip_backticks(second));
+        }
+    }
+
+    // Pattern 6: If it's a single line that looks like a command (starts with common commands)
+    if lines.len() == 1 {
+        let line = lines[0].trim();
+        if looks_like_command(line) {
+            return Ok(strip_backticks(line));
+        }
+    }
+
+    // Pattern 7: Find any line that looks like a shell command
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if looks_like_command(trimmed) && !trimmed.to_lowercase().contains("dangerous") {
+            return Ok(strip_backticks(trimmed));
         }
     }
 
     Err(anyhow!("Could not extract command from response:\n{}", response))
+}
+
+fn strip_backticks(s: &str) -> String {
+    let s = s.trim();
+    if s.starts_with('`') && s.ends_with('`') {
+        s[1..s.len()-1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn looks_like_command(s: &str) -> bool {
+    let common_prefixes = [
+        "ls", "cd", "cat", "grep", "find", "du", "df", "free", "top", "ps",
+        "kill", "mkdir", "rm", "cp", "mv", "chmod", "chown", "sudo", "apt",
+        "yum", "dnf", "pacman", "brew", "npm", "yarn", "cargo", "git", "docker",
+        "kubectl", "curl", "wget", "ssh", "scp", "tar", "zip", "unzip", "head",
+        "tail", "sort", "uniq", "wc", "awk", "sed", "echo", "printf", "touch",
+        "nano", "vim", "vi", "systemctl", "journalctl", "htop", "ncdu", "tree",
+    ];
+
+    let lower = s.to_lowercase();
+    common_prefixes.iter().any(|&prefix| {
+        lower.starts_with(prefix) &&
+        (lower.len() == prefix.len() || lower.chars().nth(prefix.len()) == Some(' '))
+    })
 }
