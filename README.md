@@ -1,78 +1,137 @@
-# 🤖 Spren - AI-Powered Terminal Assistant
+# Spren
 
-[![GitHub release](https://img.shields.io/github/v/release/smadgulkar/spren)](https://github.com/smadgulkar/spren/releases)
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0) [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue)]()
+**Natural language to shell commands. Runs locally. No API keys needed.**
 
-A smart AI shell assistant built with Rust 🦀 that transforms natural language into accurate shell commands (Bash, PowerShell, CMD) for Linux, macOS, and Windows. Boost your command-line productivity, whether you're a beginner or power user.
+[![GitHub release](https://img.shields.io/github/v/release/smadgulkar/spren-ai-terminal-assistant-rust)](https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![OS](https://img.shields.io/badge/OS-Linux%20%7C%20macOS%20%7C%20Windows-blue)]()
 
-<p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#license">License</a>
-</p>
+```
+spren> what is using my disk space
 
-## About
+Suggested command: (5s)
+du -h --max-depth=1 / 2>/dev/null | sort -hr
 
-Spren is an intelligent command-line (CLI) assistant, written in Rust and powered by AI models (like Claude & OpenAI), designed to translate natural language instructions into precise shell commands. Whether you're new to the terminal or an experienced user, Spren streamlines your workflow by understanding your intent and generating the right commands for Bash (Linux/macOS), PowerShell (Windows), or CMD (Windows). Improve your efficiency and reduce time spent looking up command syntax.
+Execute? [y/N] y
+```
 
-## Features
+## Why Spren?
 
-- 🤖 **Natural Language Processing:** Converts plain English requests into shell commands using AI.
-- 🔄 **Cross-Platform:** Native support for Windows (PowerShell/CMD), Linux (Bash), and macOS (Bash).
-- 🛡️ **Safe Execution:** Preview commands before running and confirm execution for safety.
-- 🧠 **Intelligent Assistance:** Provides error analysis and suggests command corrections.
-- ⚡ **Multi-Shell:** Works seamlessly with Bash, PowerShell, and CMD environments.
+- **100% Local** - Runs entirely on your CPU. No cloud, no API keys, no internet required
+- **Zero Config** - Download, extract, run. That's it
+- **Fast** - ~5 second inference on modern CPUs
+- **Private** - Your commands never leave your machine
+- **Cross-Platform** - Linux, macOS, Windows (Bash, Zsh, PowerShell, CMD)
 
-## Installation
+## Quick Start
 
-### Linux and macOS
+### Linux
+```bash
+curl -LO https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases/latest/download/spren-linux-amd64.tar.gz
+tar xzf spren-linux-amd64.tar.gz
+./spren
+```
 
-1.  Download the latest release binary for your platform:
-    ```bash
-    # Linux (amd64)
-    curl -LO [https://github.com/smadgulkar/spren/releases/latest/download/spren-linux-amd64.tar.gz](https://github.com/smadgulkar/spren/releases/latest/download/spren-linux-amd64.tar.gz)
-    # macOS (amd64)
-    curl -LO [https://github.com/smadgulkar/spren/releases/latest/download/spren-macos-amd64.tar.gz](https://github.com/smadgulkar/spren/releases/latest/download/spren-macos-amd64.tar.gz)
-    # (Add other architectures like arm64 if available)
-    ```
-2.  Extract the archive and make the binary executable:
-    ```bash
-    tar xzf spren-*-amd64.tar.gz
-    chmod +x spren
-    ```
-3.  (Optional) Move the `spren` binary to a directory in your system's PATH for easier access:
-    ```bash
-    sudo mv spren /usr/local/bin/
-    ```
+### macOS
+```bash
+curl -LO https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases/latest/download/spren-macos-amd64.tar.gz
+tar xzf spren-macos-amd64.tar.gz
+./spren
+```
 
 ### Windows
+Download `spren-windows-amd64.zip` from [releases](https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases), extract, and run `spren.exe`.
 
-1.  Download the `spren-windows-amd64.zip` (or other architecture if available) from the [latest release page](https://github.com/smadgulkar/spren/releases/latest).
-2.  Extract the ZIP archive.
-3.  You can run `spren.exe` directly from your terminal or move it to a directory included in your system's PATH environment variable.
+## Examples
 
-## Configuration
+```
+spren> find all python files modified today
+Suggested command: find . -name "*.py" -mtime 0
 
-1.  Run Spren for the first time to generate the default configuration file:
-    ```bash
-    spren config --show-path # Or simply run 'spren' if it prompts
-    ```
-2.  Edit the configuration file (`config.toml`) located in the path shown above:
-    ```bash
-    # Example paths (use the path shown by the command above)
-    # Linux/macOS:
-    vim ~/.config/spren/config.toml
-    # Windows (PowerShell):
-    notepad $env:USERPROFILE\.config\spren\config.toml
-    ```
-    *You'll typically need to add your API keys for the AI providers (like OpenAI or Anthropic) in this file.*
+spren> show me running docker containers
+Suggested command: docker ps
 
-## Usage Examples
+spren> compress this folder
+Suggested command: tar -czvf folder.tar.gz folder/
 
-Interact with Spren using natural language queries prefixed by `spren` or within its interactive prompt:
+spren> kill process on port 3000  
+Suggested command: kill $(lsof -t -i:3000)
 
-Find large files:
+spren> what's my public IP
+Suggested command: curl -s ifconfig.me
+```
+
+## How It Works
+
+Spren uses a fine-tuned [Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) model, quantized to 4-bit (Q4_K_M) for efficient CPU inference. The model was trained on 20,000+ shell command examples covering:
+
+- File operations (ls, find, cp, mv, rm)
+- Process management (ps, kill, top)
+- Networking (curl, wget, ssh, ping)
+- Package managers (apt, brew, pacman)
+- Git, Docker, and more
+
+The model runs via [Candle](https://github.com/huggingface/candle), Hugging Face's Rust ML framework.
+
+## Requirements
+
+- ~400MB disk space (model included)
+- ~500MB RAM during inference
+- Any modern CPU (no GPU required)
+
+## Cloud Mode (Optional)
+
+If you prefer cloud APIs for faster/smarter responses, Spren also supports:
+
+- **Anthropic** (Claude)
+- **OpenAI** (GPT-4o)
+- **Google** (Gemini)
+
+Create a config file at `~/.config/spren/config.toml`:
+
+```toml
+[ai]
+provider = "openai"  # or "anthropic" or "gemini"
+openai_api_key = "sk-..."
+```
+
+## Building from Source
+
 ```bash
-spren show me files larger than 1GB in my home directory
+# Clone
+git clone https://github.com/smadgulkar/spren-ai-terminal-assistant-rust.git
+cd spren-ai-terminal-assistant-rust
+
+# Download model files
+mkdir -p models
+curl -L -o models/spren-model.gguf "https://huggingface.co/smadgulkar/spren-shell-model/resolve/main/spren-model.gguf"
+curl -L -o models/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json"
+
+# Build with local LLM support
+cargo build --release --features local
+
+# Run
+./target/release/spren
+```
+
+## Safety
+
+Spren flags dangerous commands (like `rm -rf`) and always asks for confirmation before execution. You stay in control.
+
+```
+spren> delete everything in this folder
+
+Suggested command: rm -rf ./* [DANGEROUS]
+
+This command has been identified as potentially dangerous.
+Execute? [y/N]
+```
+
+## License
+
+MIT
+
+## Links
+
+- [Model on Hugging Face](https://huggingface.co/smadgulkar/spren-shell-model)
+- [Report Issues](https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/issues)
