@@ -36,7 +36,7 @@ pub struct AIConfig {
 }
 
 fn default_model() -> String {
-    "claude-sonnet-4-20250514".to_string()
+    "claude-3-5-haiku-20241022".to_string()
 }
 
 fn default_max_tokens() -> u32 {
@@ -213,7 +213,7 @@ impl Config {
                 anthropic_api_key: Some("your-anthropic-api-key-here".to_string()),
                 openai_api_key: Some("your-openai-api-key-here".to_string()),
                 gemini_api_key: Some("your-gemini-api-key-here".to_string()),
-                model: "claude-sonnet-4-20250514".to_string(),
+                model: "claude-3-5-haiku-20241022".to_string(),
                 max_tokens: 1024,
                 temperature: 0.7,
             },
@@ -236,8 +236,8 @@ impl Config {
     /// Get the appropriate model for the configured provider
     pub fn get_default_model_for_provider(&self) -> &str {
         match self.ai.provider {
-            AIProvider::Anthropic => "claude-sonnet-4-20250514",
-            AIProvider::OpenAI => "gpt-4o",
+            AIProvider::Anthropic => "claude-3-5-haiku-20241022",
+            AIProvider::OpenAI => "gpt-4o-mini",
             AIProvider::Gemini => "gemini-2.0-flash",
         }
     }

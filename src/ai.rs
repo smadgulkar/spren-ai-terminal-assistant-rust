@@ -130,7 +130,7 @@ async fn get_anthropic_command(query: &str, config: &Config) -> Result<(String, 
     let shell_name = shell_type.get_shell_name();
 
     let prompt = build_command_prompt(shell_name, query);
-    let model = get_model_or_default(config, "claude-sonnet-4-20250514");
+    let model = get_model_or_default(config, "claude-3-5-haiku-20241022");
 
     let response = client
         .post("https://api.anthropic.com/v1/messages")
@@ -186,7 +186,7 @@ async fn get_anthropic_error(
     let shell_name = shell_type.get_shell_name();
 
     let prompt = build_error_prompt(shell_name, command, stdout, stderr);
-    let model = get_model_or_default(config, "claude-sonnet-4-20250514");
+    let model = get_model_or_default(config, "claude-3-5-haiku-20241022");
 
     let response = client
         .post("https://api.anthropic.com/v1/messages")
@@ -243,7 +243,7 @@ async fn get_openai_command(query: &str, config: &Config) -> Result<(String, boo
     let shell_name = shell_type.get_shell_name();
 
     let prompt = build_command_prompt(shell_name, query);
-    let model = get_model_or_default(config, "gpt-4o");
+    let model = get_model_or_default(config, "gpt-4o-mini");
 
     // Use max_completion_tokens for newer models, fall back to max_tokens for compatibility
     let response = client
@@ -307,7 +307,7 @@ async fn get_openai_error(
     let shell_name = shell_type.get_shell_name();
 
     let prompt = build_error_prompt(shell_name, command, stdout, stderr);
-    let model = get_model_or_default(config, "gpt-4o");
+    let model = get_model_or_default(config, "gpt-4o-mini");
 
     let response = client
         .post("https://api.openai.com/v1/chat/completions")
@@ -491,41 +491,77 @@ fn get_model_or_default<'a>(config: &'a Config, default: &'a str) -> &'a str {
 
 fn build_command_prompt(shell_name: &str, query: &str) -> String {
     format!(
-        "Convert this natural language query into a {} command: '{}'. \
-         Also analyze if this command could be dangerous (e.g., system-wide deletions, \
-         format operations, etc). You must respond in exactly this format:\nDANGEROUS: true/false\nCOMMAND: <command>",
+        r#"Convert to a {} command: {}
+
+Reply ONLY in this exact format (2 lines, no explanation):
+DANGEROUS:false
+COMMAND:your_command_here
+
+Set DANGEROUS:true only for destructive commands (rm -rf, format, dd, etc)."#,
         shell_name, query
     )
 }
 
 fn build_error_prompt(shell_name: &str, command: &str, stdout: &str, stderr: &str) -> String {
     format!(
-        "Analyze this {} command result:\nCommand: {}\nStdout: {}\nStderr: {}\n\
-         Explain what happened and suggest improvements. Be specific and brief.",
+        "Analyze briefly. {} command: {}\nOutput: {}\nError: {}\nOne short paragraph max.",
         shell_name, command, stdout, stderr
     )
 }
 
 fn parse_ai_response(response: &str) -> Result<(String, bool)> {
-    let lines: Vec<&str> = response.trim().split('\n').collect();
+    let response = response.trim();
 
-    let dangerous_line = lines
-        .iter()
-        .find(|line| line.to_lowercase().contains("dangerous"))
-        .ok_or_else(|| anyhow!("Could not find DANGEROUS line in response: {}", response))?;
+    // Try to find DANGEROUS line
+    let is_dangerous = response.to_lowercase().contains("dangerous:true")
+        || response.to_lowercase().contains("dangerous: true");
 
-    let command_line = lines
-        .iter()
-        .find(|line| line.to_lowercase().contains("command"))
-        .ok_or_else(|| anyhow!("Could not find COMMAND line in response: {}", response))?;
-
-    let is_dangerous = dangerous_line.to_lowercase().contains("true");
-    let command = command_line
-        .replace("COMMAND:", "")
-        .replace("Command:", "")
-        .replace("command:", "")
-        .trim()
-        .to_string();
+    // Try multiple patterns to extract the command
+    let command = extract_command(response)?;
 
     Ok((command, is_dangerous))
+}
+
+fn extract_command(response: &str) -> Result<String> {
+    // Pattern 1: COMMAND:xxx or COMMAND: xxx
+    for line in response.lines() {
+        let lower = line.to_lowercase();
+        if lower.starts_with("command:") {
+            let cmd = line[8..].trim();
+            if !cmd.is_empty() {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+
+    // Pattern 2: Look for command after "COMMAND" anywhere in line
+    for line in response.lines() {
+        if let Some(pos) = line.to_lowercase().find("command:") {
+            let cmd = line[pos + 8..].trim();
+            if !cmd.is_empty() {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+
+    // Pattern 3: Look for backtick-wrapped command
+    if let Some(start) = response.find('`') {
+        if let Some(end) = response[start + 1..].find('`') {
+            let cmd = &response[start + 1..start + 1 + end];
+            if !cmd.is_empty() && !cmd.contains('\n') {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+
+    // Pattern 4: If response is just 2 lines, second line is probably the command
+    let lines: Vec<&str> = response.lines().collect();
+    if lines.len() == 2 {
+        let second = lines[1].trim();
+        if !second.to_lowercase().starts_with("dangerous") {
+            return Ok(second.to_string());
+        }
+    }
+
+    Err(anyhow!("Could not extract command from response:\n{}", response))
 }
