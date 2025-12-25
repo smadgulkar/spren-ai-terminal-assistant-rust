@@ -33,6 +33,15 @@ pub struct AIConfig {
     pub max_tokens: u32,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    // Local LLM settings
+    #[serde(default)]
+    pub local_model_path: Option<String>,
+    #[serde(default = "default_local_model_repo")]
+    pub local_model_repo: String,
+}
+
+fn default_local_model_repo() -> String {
+    "Qwen/Qwen2.5-0.5B-Instruct".to_string()
 }
 
 fn default_model() -> String {
@@ -57,17 +66,21 @@ impl Default for AIConfig {
             model: default_model(),
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
+            local_model_path: None,
+            local_model_repo: default_local_model_repo(),
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Default, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum AIProvider {
     #[default]
     Anthropic,
     OpenAI,
     Gemini,
+    #[cfg(feature = "local")]
+    Local,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,6 +229,8 @@ impl Config {
                 model: "claude-3-5-haiku-20241022".to_string(),
                 max_tokens: 1024,
                 temperature: 0.7,
+                local_model_path: None,
+                local_model_repo: "Qwen/Qwen2.5-0.5B-Instruct".to_string(),
             },
             security: SecurityConfig::default(),
             display: DisplayConfig::default(),
@@ -239,6 +254,8 @@ impl Config {
             AIProvider::Anthropic => "claude-3-5-haiku-20241022",
             AIProvider::OpenAI => "gpt-4o-mini",
             AIProvider::Gemini => "gemini-2.0-flash",
+            #[cfg(feature = "local")]
+            AIProvider::Local => "Qwen/Qwen2.5-0.5B-Instruct",
         }
     }
 }

@@ -6,6 +6,8 @@ use std::time::Instant;
 mod ai;
 mod config;
 mod executor;
+#[cfg(feature = "local")]
+mod local_llm;
 mod shell;
 
 #[tokio::main]

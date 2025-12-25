@@ -1,8 +1,15 @@
 use crate::config::{AIProvider, Config};
+#[cfg(feature = "local")]
+use crate::local_llm::LocalLLM;
 use crate::shell::ShellType;
 use anyhow::{anyhow, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "local")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "local")]
+static LOCAL_LLM: OnceLock<LocalLLM> = OnceLock::new();
 
 // ============================================================================
 // Anthropic Types
@@ -93,6 +100,8 @@ pub async fn get_command_suggestion(query: &str, config: &Config) -> Result<(Str
         AIProvider::Anthropic => get_anthropic_command(query, config).await,
         AIProvider::OpenAI => get_openai_command(query, config).await,
         AIProvider::Gemini => get_gemini_command(query, config).await,
+        #[cfg(feature = "local")]
+        AIProvider::Local => get_local_command(query, config).await,
     }
 }
 
@@ -106,6 +115,8 @@ pub async fn get_error_suggestion(
         AIProvider::Anthropic => get_anthropic_error(command, stdout, stderr, config).await,
         AIProvider::OpenAI => get_openai_error(command, stdout, stderr, config).await,
         AIProvider::Gemini => get_gemini_error(command, stdout, stderr, config).await,
+        #[cfg(feature = "local")]
+        AIProvider::Local => get_local_error(command, stdout, stderr, config).await,
     }
 }
 
@@ -626,4 +637,84 @@ fn looks_like_command(s: &str) -> bool {
         lower.starts_with(prefix) &&
         (lower.len() == prefix.len() || lower.chars().nth(prefix.len()) == Some(' '))
     })
+}
+
+// ============================================================================
+// Local LLM Implementation
+// ============================================================================
+
+#[cfg(feature = "local")]
+async fn get_local_command(query: &str, config: &Config) -> Result<(String, bool)> {
+    let shell_type = ShellType::detect();
+    let shell_name = shell_type.get_shell_name();
+
+    let prompt = format!(
+        r#"<|im_start|>system
+You are a shell command assistant. Convert natural language to {} commands.
+Reply ONLY with:
+DANGEROUS:false
+COMMAND:the_command
+
+Set DANGEROUS:true for destructive commands (rm -rf, format, dd).
+<|im_end|>
+<|im_start|>user
+{}
+<|im_end|>
+<|im_start|>assistant
+"#,
+        shell_name, query
+    );
+
+    // Initialize LLM if not already done
+    let _ = LOCAL_LLM.get_or_try_init(|| LocalLLM::load(config))?;
+
+    let max_tokens = config.ai.max_tokens.min(100);
+    let temperature = config.ai.temperature;
+
+    // Run inference synchronously (Candle doesn't need async)
+    let response = LOCAL_LLM
+        .get()
+        .ok_or_else(|| anyhow!("LLM not initialized"))?
+        .generate(&prompt, max_tokens, temperature)?;
+
+    parse_ai_response(&response)
+}
+
+#[cfg(feature = "local")]
+async fn get_local_error(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<String> {
+    let shell_type = ShellType::detect();
+    let shell_name = shell_type.get_shell_name();
+
+    let prompt = format!(
+        r#"<|im_start|>system
+You are a shell command assistant. Briefly explain command results.
+<|im_end|>
+<|im_start|>user
+{} command: {}
+Output: {}
+Error: {}
+Explain briefly.
+<|im_end|>
+<|im_start|>assistant
+"#,
+        shell_name, command, stdout, stderr
+    );
+
+    // Initialize LLM if not already done
+    let _ = LOCAL_LLM.get_or_try_init(|| LocalLLM::load(config))?;
+
+    let max_tokens = config.ai.max_tokens.min(200);
+    let temperature = config.ai.temperature;
+
+    let response = LOCAL_LLM
+        .get()
+        .ok_or_else(|| anyhow!("LLM not initialized"))?
+        .generate(&prompt, max_tokens, temperature)?;
+
+    Ok(response.trim().to_string())
 }
