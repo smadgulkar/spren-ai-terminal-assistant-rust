@@ -83,10 +83,31 @@ impl LocalSpren {
 
     /// Generate a shell command from natural language input
     pub fn generate(&mut self, prompt: &str, max_tokens: u32, temperature: f32) -> Result<String> {
+        self.generate_with_context(prompt, None, max_tokens, temperature)
+    }
+
+    /// Generate a shell command with local context
+    pub fn generate_with_context(
+        &mut self,
+        prompt: &str,
+        context: Option<&str>,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Result<String> {
+        // Build system prompt with optional context
+        let system_prompt = if let Some(ctx) = context {
+            format!(
+                "You are Spren, a terminal assistant. Convert natural language to shell commands.\n{}\nReply with DANGEROUS:true/false and COMMAND:the_command",
+                ctx
+            )
+        } else {
+            "You are Spren, a terminal assistant. Convert natural language to shell commands. Reply with DANGEROUS:true/false and COMMAND:the_command".to_string()
+        };
+
         // Format prompt using ChatML format for Qwen Instruct models
         let formatted_prompt = format!(
-            "<|im_start|>system\nYou are Spren, a terminal assistant. Convert natural language to shell commands. Reply with DANGEROUS:true/false and COMMAND:the_command<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-            prompt
+            "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            system_prompt, prompt
         );
 
         // Encode tokens

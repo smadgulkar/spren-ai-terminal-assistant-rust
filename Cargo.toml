@@ -1,6 +1,6 @@
 [package]
 name = "spren"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "An AI-powered shell assistant that helps with command-line operations"
 authors = ["Shubhankar Madgulkar <shubhankar2205@gmail.com>"]
@@ -15,6 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 default = ["cloud"]
 cloud = []
 local = ["candle-core", "candle-transformers", "tokenizers", "once_cell"]
+tui = ["ratatui", "crossterm"]
 
 [dependencies]
 tokio = { version = "1.28", features = ["full"] }
@@ -33,6 +34,10 @@ candle-core = { version = "0.8", optional = true }
 candle-transformers = { version = "0.8", optional = true }
 tokenizers = { version = "0.20", optional = true }
 once_cell = { version = "1.19", optional = true }
+
+# TUI dependencies (optional)
+ratatui = { version = "0.28", optional = true }
+crossterm = { version = "0.28", optional = true }
 
 [profile.release]
 opt-level = 3

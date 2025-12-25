@@ -18,29 +18,75 @@ Execute? [y/N] y
 ## Why Spren?
 
 - **100% Local** - Runs entirely on your CPU. No cloud, no API keys, no internet required
-- **Zero Config** - Download, extract, run. That's it
+- **Zero Config** - Download, install, run. That's it
 - **Fast** - ~5 second inference on modern CPUs
 - **Private** - Your commands never leave your machine
+- **Smart** - Context-aware: understands your current directory and git status
+- **Self-Healing** - Auto-suggests fixes when commands fail
 - **Cross-Platform** - Linux, macOS, Windows (Bash, Zsh, PowerShell, CMD)
 
-## Quick Start
+## Installation
 
-### Linux
+### Linux (Recommended)
+
 ```bash
+# Download and install to PATH
 curl -LO https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases/latest/download/spren-linux-amd64.tar.gz
 tar xzf spren-linux-amd64.tar.gz
-./spren
+sudo mv spren /usr/local/bin/
+sudo mv models /usr/local/share/spren/
+
+# Now use from anywhere
+spren
+```
+
+Or install to user directory (no sudo):
+```bash
+mkdir -p ~/.local/bin ~/.local/share/spren
+tar xzf spren-linux-amd64.tar.gz
+mv spren ~/.local/bin/
+mv models/* ~/.local/share/spren/
+
+# Add to PATH (add this to ~/.bashrc or ~/.zshrc)
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### macOS
+
 ```bash
 curl -LO https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases/latest/download/spren-macos-amd64.tar.gz
 tar xzf spren-macos-amd64.tar.gz
-./spren
+sudo mv spren /usr/local/bin/
+sudo mkdir -p /usr/local/share/spren
+sudo mv models/* /usr/local/share/spren/
+
+spren
 ```
 
 ### Windows
-Download `spren-windows-amd64.zip` from [releases](https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases), extract, and run `spren.exe`.
+
+1. Download `spren-windows-amd64.zip` from [releases](https://github.com/smadgulkar/spren-ai-terminal-assistant-rust/releases)
+2. Extract to a folder (e.g., `C:\Program Files\Spren`)
+3. Add that folder to your PATH environment variable
+4. Open a new terminal and run `spren`
+
+## Usage
+
+### Basic Mode (REPL)
+```bash
+spren
+```
+
+### Interactive TUI Mode
+```bash
+spren --tui
+```
+Features: command editing, history navigation, visual interface
+
+### Single Query Mode
+```bash
+spren -q "list all large files"
+```
 
 ## Examples
 
@@ -60,6 +106,37 @@ Suggested command: kill $(lsof -t -i:3000)
 spren> what's my public IP
 Suggested command: curl -s ifconfig.me
 ```
+
+## Features
+
+### Context-Aware Commands
+Spren understands your environment:
+```
+~/my-project (git:main)$ spren
+spren> show recent changes
+Suggested command: git log --oneline -10
+```
+
+### Auto-Fix Failed Commands
+When a command fails, Spren automatically suggests a fix:
+```
+spren> list docker images
+
+Suggested command: docker images
+Execute? [y/N] y
+
+Error: permission denied
+
+Attempting to fix...
+Fixed command: sudo docker images
+Try fixed command? [y/N]
+```
+
+### Interactive TUI
+Run `spren --tui` for a full terminal interface:
+- Edit commands before execution (Tab)
+- Navigate history (Up/Down arrows)
+- Visual feedback for dangerous commands
 
 ## How It Works
 
@@ -107,8 +184,8 @@ mkdir -p models
 curl -L -o models/spren-model.gguf "https://huggingface.co/smadgulkar/spren-shell-model/resolve/main/spren-model.gguf"
 curl -L -o models/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json"
 
-# Build with local LLM support
-cargo build --release --features local
+# Build with all features
+cargo build --release --features "local,tui"
 
 # Run
 ./target/release/spren

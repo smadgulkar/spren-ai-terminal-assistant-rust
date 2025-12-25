@@ -68,8 +68,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Build with local LLM support
-        run: cargo build --release --features local --target ${{ matrix.target }}
+      - name: Build with local LLM and TUI support
+        run: cargo build --release --features "local,tui" --target ${{ matrix.target }}
 
       - name: Download model files
         shell: bash

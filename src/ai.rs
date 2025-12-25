@@ -123,6 +123,18 @@ pub async fn get_error_suggestion(
     }
 }
 
+/// Get a fixed command based on the error output
+/// Returns (fixed_command, is_dangerous)
+#[cfg(feature = "local")]
+pub async fn get_fix_command(
+    original_command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<(String, bool)> {
+    get_local_fix(original_command, stdout, stderr, config).await
+}
+
 // ============================================================================
 // Anthropic Implementation
 // ============================================================================
@@ -662,8 +674,14 @@ fn init_local_llm(_config: &Config) -> Result<()> {
 
 #[cfg(feature = "local")]
 async fn get_local_command(query: &str, config: &Config) -> Result<(String, bool)> {
+    use crate::context::LocalContext;
+
     // Initialize LLM if not already done
     init_local_llm(config)?;
+
+    // Gather local context (current directory, files, git status)
+    let ctx = LocalContext::gather();
+    let context_str = ctx.format_for_prompt();
 
     let max_tokens = config.ai.max_tokens.min(100);
     let temperature = config.ai.temperature;
@@ -671,7 +689,7 @@ async fn get_local_command(query: &str, config: &Config) -> Result<(String, bool
     let mut llm_guard = LOCAL_LLM.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
     let llm = llm_guard.as_mut().ok_or_else(|| anyhow!("LLM not initialized"))?;
 
-    let response = llm.generate(query, max_tokens, temperature)?;
+    let response = llm.generate_with_context(query, Some(&context_str), max_tokens, temperature)?;
     parse_ai_response(&response)
 }
 
@@ -689,4 +707,34 @@ async fn get_local_error(
     let llm = llm_guard.as_mut().ok_or_else(|| anyhow!("LLM not initialized"))?;
 
     llm.analyze_error(command, stdout, stderr)
+}
+
+#[cfg(feature = "local")]
+async fn get_local_fix(
+    command: &str,
+    stdout: &str,
+    stderr: &str,
+    config: &Config,
+) -> Result<(String, bool)> {
+    use crate::context::LocalContext;
+
+    init_local_llm(config)?;
+
+    // Gather context for better fix suggestions
+    let ctx = LocalContext::gather();
+    let context_str = ctx.format_for_prompt();
+
+    let fix_prompt = format!(
+        "Command '{}' failed.\nOutput: {}\nError: {}\nProvide a fixed command.",
+        command, stdout, stderr
+    );
+
+    let max_tokens = config.ai.max_tokens.min(100);
+    let temperature = config.ai.temperature;
+
+    let mut llm_guard = LOCAL_LLM.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+    let llm = llm_guard.as_mut().ok_or_else(|| anyhow!("LLM not initialized"))?;
+
+    let response = llm.generate_with_context(&fix_prompt, Some(&context_str), max_tokens, temperature)?;
+    parse_ai_response(&response)
 }
