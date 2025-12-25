@@ -132,12 +132,13 @@ async fn run_tui(config: config::Config) -> Result<()> {
                         }
                     }
                     KeyCode::Char('y') | KeyCode::Char('Y') if app.command.is_some() && !app.edit_mode => {
-                        // Execute command
-                        if let Some(cmd) = app.get_command() {
+                        // Execute command - clone to avoid borrow issues
+                        let cmd = app.get_command().map(|s| s.to_string());
+                        if let Some(cmd) = cmd {
                             app.status = "Executing...".to_string();
                             terminal.draw(|f| tui::draw(f, &app))?;
 
-                            match executor::execute_command(cmd).await {
+                            match executor::execute_command(&cmd).await {
                                 Ok(output) => {
                                     let mut result = String::new();
                                     if !output.stdout.is_empty() {
