@@ -1,170 +1,327 @@
-//! Local LLM inference using Candle
+//! Local LLM inference using Candle with quantized GGUF models
 //!
-//! This module provides CPU-based inference for small language models,
+//! This module provides CPU-based inference for the fine-tuned Qwen 0.5B model,
 //! allowing Spren to work without cloud API calls.
 
 #[cfg(feature = "local")]
 use anyhow::{anyhow, Result};
 #[cfg(feature = "local")]
-use candle_core::{DType, Device, Tensor};
+use candle_core::quantized::gguf_file;
 #[cfg(feature = "local")]
-use candle_nn::VarBuilder;
+use candle_core::{Device, Tensor};
 #[cfg(feature = "local")]
-use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
+use candle_transformers::generation::LogitsProcessor;
 #[cfg(feature = "local")]
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
 #[cfg(feature = "local")]
-use std::path::PathBuf;
+use std::fs::File;
+#[cfg(feature = "local")]
+use std::path::{Path, PathBuf};
 #[cfg(feature = "local")]
 use tokenizers::Tokenizer;
 
+/// Model and tokenizer filenames
 #[cfg(feature = "local")]
-use crate::config::Config;
+const MODEL_FILENAME: &str = "spren-model.gguf";
+#[cfg(feature = "local")]
+const TOKENIZER_FILENAME: &str = "tokenizer.json";
 
-/// Manages local LLM model loading and inference
+/// Local Spren model for shell command generation
 #[cfg(feature = "local")]
-pub struct LocalLLM {
-    model: Qwen2Model,
+pub struct LocalSpren {
+    model: Qwen2,
     tokenizer: Tokenizer,
     device: Device,
-    config: Qwen2Config,
 }
 
 #[cfg(feature = "local")]
-impl LocalLLM {
-    /// Load a model from HuggingFace Hub or local path
-    pub fn load(app_config: &Config) -> Result<Self> {
+impl LocalSpren {
+    /// Load model from default locations (searches relative to executable, then standard paths)
+    pub fn load_default() -> Result<Self> {
+        let (model_path, tokenizer_path) = find_model_files()?;
+        Self::new(
+            &model_path.to_string_lossy(),
+            &tokenizer_path.to_string_lossy(),
+        )
+    }
+
+    /// Load the GGUF model and tokenizer from specific paths
+    pub fn new(model_path: &str, tokenizer_path: &str) -> Result<Self> {
         let device = Device::Cpu;
 
-        let model_id = &app_config.ai.local_model_repo;
+        // Verify files exist
+        if !Path::new(model_path).exists() {
+            return Err(anyhow!(
+                "Model file not found: {}\n\nThe model should be at one of:\n  - Next to the spren executable\n  - ~/.local/share/spren/\n  - /usr/share/spren/",
+                model_path
+            ));
+        }
+        if !Path::new(tokenizer_path).exists() {
+            return Err(anyhow!(
+                "Tokenizer file not found: {}\n\nDownload from: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct",
+                tokenizer_path
+            ));
+        }
 
-        println!("Loading local model: {}...", model_id);
+        // Load the GGUF file
+        let mut file = File::open(model_path)?;
+        let content = gguf_file::Content::read(&mut file)
+            .map_err(|e| anyhow!("Failed to read GGUF: {}", e))?;
+        let model = Qwen2::from_gguf(content, &mut file, &device)
+            .map_err(|e| anyhow!("Failed to load model: {}", e))?;
 
-        // Download or locate model files
-        let api = Api::new()?;
-        let repo = api.repo(Repo::new(model_id.clone(), RepoType::Model));
-
-        let config_path = repo.get("config.json")?;
-        let tokenizer_path = repo.get("tokenizer.json")?;
-        let weights_path = repo.get("model.safetensors")?;
-
-        // Load config
-        let config: Qwen2Config = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
-
-        // Load tokenizer
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        // Load the Tokenizer
+        let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
-
-        // Load model weights
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
-
-        let model = Qwen2Model::new(&config, vb)?;
-
-        println!("Model loaded successfully!");
 
         Ok(Self {
             model,
             tokenizer,
             device,
-            config,
         })
     }
 
-    /// Generate a response for the given prompt
-    pub fn generate(&self, prompt: &str, max_tokens: u32, temperature: f32) -> Result<String> {
-        // Encode the prompt
+    /// Generate a shell command from natural language input
+    pub fn generate(&mut self, prompt: &str, max_tokens: u32, temperature: f32) -> Result<String> {
+        // Format prompt using ChatML format for Qwen Instruct models
+        let formatted_prompt = format!(
+            "<|im_start|>system\nYou are Spren, a terminal assistant. Convert natural language to shell commands. Reply with DANGEROUS:true/false and COMMAND:the_command<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            prompt
+        );
+
+        // Encode tokens
         let encoding = self
             .tokenizer
-            .encode(prompt, true)
+            .encode(formatted_prompt.as_str(), true)
             .map_err(|e| anyhow!("Tokenization failed: {}", e))?;
+        let prompt_tokens = encoding.get_ids().to_vec();
+        let mut all_tokens = prompt_tokens.clone();
+        let mut output_tokens = vec![];
 
-        let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
-        let prompt_len = tokens.len();
+        // Generation config
+        let temp = if temperature <= 0.0 {
+            None
+        } else {
+            Some(temperature as f64)
+        };
+        let mut logits_processor = LogitsProcessor::new(299792458, temp, None);
 
-        // Generate tokens
-        for _ in 0..max_tokens {
-            let input = Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
+        // Qwen2.5 special tokens
+        const EOS_TOKEN: u32 = 151643; // <|endoftext|>
+        const EOT_TOKEN: u32 = 151645; // <|im_end|>
 
-            let logits = self.model.forward(&input, prompt_len - 1)?;
-            let logits = logits.squeeze(0)?;
+        // Inference loop
+        for i in 0..max_tokens {
+            let context_size = if i == 0 { all_tokens.len() } else { 1 };
+            let start_pos = all_tokens.len().saturating_sub(context_size);
+            let context = &all_tokens[start_pos..];
 
-            // Get the last token's logits
-            let last_logits = logits.get(logits.dim(0)? - 1)?;
+            let input = Tensor::new(context, &self.device)?.unsqueeze(0)?;
+            let logits = self.model.forward(&input, start_pos)?;
+            let logits = logits.squeeze(0)?.squeeze(0)?;
 
-            // Apply temperature and sample
-            let next_token = if temperature <= 0.0 {
-                // Greedy sampling
-                last_logits.argmax(0)?.to_scalar::<u32>()?
-            } else {
-                // Temperature sampling
-                let scaled = (last_logits / temperature as f64)?;
-                let probs = candle_nn::ops::softmax(&scaled, 0)?;
-                sample_from_probs(&probs)?
-            };
+            let next_token = logits_processor.sample(&logits)?;
 
-            // Check for EOS
-            if next_token == self.config.eos_token_id.unwrap_or(151643) as u32 {
+            // Stop on End-of-Turn or End-of-Text tokens
+            if next_token == EOS_TOKEN || next_token == EOT_TOKEN {
                 break;
             }
 
-            tokens.push(next_token);
+            all_tokens.push(next_token);
+            output_tokens.push(next_token);
         }
 
-        // Decode the generated tokens (skip the prompt)
-        let generated_tokens = &tokens[prompt_len..];
-        let output = self
+        // Decode output tokens
+        let result = self
             .tokenizer
-            .decode(generated_tokens, true)
+            .decode(&output_tokens, true)
             .map_err(|e| anyhow!("Decoding failed: {}", e))?;
 
-        Ok(output)
+        // Clean up the result
+        let clean_result = result
+            .trim()
+            .replace("<|im_end|>", "")
+            .replace("<|endoftext|>", "")
+            .trim()
+            .to_string();
+
+        Ok(clean_result)
+    }
+
+    /// Generate a command suggestion (convenience wrapper)
+    pub fn get_command(&mut self, query: &str) -> Result<(String, bool)> {
+        let response = self.generate(query, 100, 0.1)?;
+        parse_response(&response)
+    }
+
+    /// Analyze an error (convenience wrapper)
+    pub fn analyze_error(&mut self, command: &str, stdout: &str, stderr: &str) -> Result<String> {
+        let prompt = format!(
+            "Command '{}' produced:\nOutput: {}\nError: {}\nExplain briefly.",
+            command, stdout, stderr
+        );
+        self.generate(&prompt, 150, 0.3)
     }
 }
 
+/// Find model files in standard locations
 #[cfg(feature = "local")]
-fn sample_from_probs(probs: &Tensor) -> Result<u32> {
-    use rand::Rng;
+fn find_model_files() -> Result<(PathBuf, PathBuf)> {
+    let search_paths = get_search_paths();
 
-    let probs_vec: Vec<f32> = probs.to_vec1()?;
-    let mut rng = rand::thread_rng();
-    let r: f32 = rng.gen();
+    for base_path in &search_paths {
+        let model_path = base_path.join(MODEL_FILENAME);
+        let tokenizer_path = base_path.join(TOKENIZER_FILENAME);
 
-    let mut cumsum = 0.0;
-    for (i, p) in probs_vec.iter().enumerate() {
-        cumsum += p;
-        if cumsum >= r {
-            return Ok(i as u32);
+        if model_path.exists() && tokenizer_path.exists() {
+            return Ok((model_path, tokenizer_path));
         }
     }
 
-    Ok((probs_vec.len() - 1) as u32)
+    // Return error with helpful message
+    let paths_tried: Vec<String> = search_paths
+        .iter()
+        .map(|p| format!("  - {}", p.display()))
+        .collect();
+
+    Err(anyhow!(
+        "Could not find model files ({} and {})\n\nSearched in:\n{}\n\nPlease place the model files in one of these locations.",
+        MODEL_FILENAME,
+        TOKENIZER_FILENAME,
+        paths_tried.join("\n")
+    ))
 }
 
-/// Get the path to the local models directory
+/// Get list of paths to search for model files
 #[cfg(feature = "local")]
-pub fn get_models_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not find home directory"))?;
-    let models_dir = home.join(".cache").join("spren").join("models");
-    std::fs::create_dir_all(&models_dir)?;
-    Ok(models_dir)
+fn get_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // 1. Next to the executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            paths.push(exe_dir.to_path_buf());
+            paths.push(exe_dir.join("models"));
+        }
+    }
+
+    // 2. Current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.clone());
+        paths.push(cwd.join("models"));
+    }
+
+    // 3. User data directory (~/.local/share/spren on Linux, AppData on Windows)
+    if let Some(data_dir) = dirs::data_local_dir() {
+        paths.push(data_dir.join("spren"));
+    }
+
+    // 4. Home directory
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".spren"));
+    }
+
+    // 5. System-wide (Linux/macOS)
+    #[cfg(unix)]
+    {
+        paths.push(PathBuf::from("/usr/share/spren"));
+        paths.push(PathBuf::from("/usr/local/share/spren"));
+    }
+
+    paths
 }
 
-// Stub for when local feature is not enabled
-#[cfg(not(feature = "local"))]
-pub struct LocalLLM;
+/// Parse the model response to extract command and danger flag
+#[cfg(feature = "local")]
+fn parse_response(response: &str) -> Result<(String, bool)> {
+    let response = response.trim();
+
+    // Check for dangerous flag
+    let is_dangerous = response.to_lowercase().contains("dangerous:true")
+        || response.to_lowercase().contains("dangerous: true");
+
+    // Extract command
+    let command = extract_command(response)?;
+
+    Ok((command, is_dangerous))
+}
+
+/// Extract the command from the response
+#[cfg(feature = "local")]
+fn extract_command(response: &str) -> Result<String> {
+    // Try COMMAND: pattern first
+    for line in response.lines() {
+        let lower = line.to_lowercase();
+        if lower.starts_with("command:") {
+            let cmd = line[8..].trim();
+            if !cmd.is_empty() {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+
+    // Try to find command anywhere in line
+    for line in response.lines() {
+        if let Some(pos) = line.to_lowercase().find("command:") {
+            let cmd = line[pos + 8..].trim();
+            if !cmd.is_empty() {
+                return Ok(cmd.to_string());
+            }
+        }
+    }
+
+    // If only one line and looks like a command, use it
+    let lines: Vec<&str> = response.lines().collect();
+    if lines.len() == 1 {
+        return Ok(lines[0].trim().to_string());
+    }
+
+    // Last resort: find a line that looks like a shell command
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if !trimmed.to_lowercase().starts_with("dangerous") && !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    Err(anyhow!("Could not extract command from: {}", response))
+}
+
+// ============================================================================
+// Stub implementation when local feature is disabled
+// ============================================================================
 
 #[cfg(not(feature = "local"))]
-impl LocalLLM {
-    pub fn load(_config: &crate::config::Config) -> anyhow::Result<Self> {
+pub struct LocalSpren;
+
+#[cfg(not(feature = "local"))]
+impl LocalSpren {
+    pub fn load_default() -> anyhow::Result<Self> {
+        anyhow::bail!("Local LLM support not compiled. Rebuild with: cargo build --features local")
+    }
+
+    pub fn new(_model_path: &str, _tokenizer_path: &str) -> anyhow::Result<Self> {
         anyhow::bail!("Local LLM support not compiled. Rebuild with: cargo build --features local")
     }
 
     pub fn generate(
-        &self,
+        &mut self,
         _prompt: &str,
         _max_tokens: u32,
         _temperature: f32,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("Local LLM support not compiled")
+    }
+
+    pub fn get_command(&mut self, _query: &str) -> anyhow::Result<(String, bool)> {
+        anyhow::bail!("Local LLM support not compiled")
+    }
+
+    pub fn analyze_error(
+        &mut self,
+        _command: &str,
+        _stdout: &str,
+        _stderr: &str,
     ) -> anyhow::Result<String> {
         anyhow::bail!("Local LLM support not compiled")
     }

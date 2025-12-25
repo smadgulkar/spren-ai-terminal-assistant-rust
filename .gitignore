@@ -3,4 +3,7 @@
 Cargo.lock
 .env
 .DS_Store
-/config.toml
+/config.tomlmodels/*.gguf
+
+*.gguf
+models/*.gguf

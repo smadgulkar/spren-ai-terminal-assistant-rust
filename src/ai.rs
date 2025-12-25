@@ -1,15 +1,18 @@
 use crate::config::{AIProvider, Config};
 #[cfg(feature = "local")]
-use crate::local_llm::LocalLLM;
+use crate::local_llm::LocalSpren;
 use crate::shell::ShellType;
 use anyhow::{anyhow, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "local")]
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 #[cfg(feature = "local")]
-static LOCAL_LLM: OnceLock<LocalLLM> = OnceLock::new();
+use once_cell::sync::Lazy;
+
+#[cfg(feature = "local")]
+static LOCAL_LLM: Lazy<Mutex<Option<LocalSpren>>> = Lazy::new(|| Mutex::new(None));
 
 // ============================================================================
 // Anthropic Types
@@ -644,39 +647,31 @@ fn looks_like_command(s: &str) -> bool {
 // ============================================================================
 
 #[cfg(feature = "local")]
+fn init_local_llm(_config: &Config) -> Result<()> {
+    let mut llm_guard = LOCAL_LLM.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+
+    if llm_guard.is_none() {
+        println!("Loading local AI model...");
+        let spren = LocalSpren::load_default()?;
+        *llm_guard = Some(spren);
+        println!("Model loaded!");
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "local")]
 async fn get_local_command(query: &str, config: &Config) -> Result<(String, bool)> {
-    let shell_type = ShellType::detect();
-    let shell_name = shell_type.get_shell_name();
-
-    let prompt = format!(
-        r#"<|im_start|>system
-You are a shell command assistant. Convert natural language to {} commands.
-Reply ONLY with:
-DANGEROUS:false
-COMMAND:the_command
-
-Set DANGEROUS:true for destructive commands (rm -rf, format, dd).
-<|im_end|>
-<|im_start|>user
-{}
-<|im_end|>
-<|im_start|>assistant
-"#,
-        shell_name, query
-    );
-
     // Initialize LLM if not already done
-    let _ = LOCAL_LLM.get_or_try_init(|| LocalLLM::load(config))?;
+    init_local_llm(config)?;
 
     let max_tokens = config.ai.max_tokens.min(100);
     let temperature = config.ai.temperature;
 
-    // Run inference synchronously (Candle doesn't need async)
-    let response = LOCAL_LLM
-        .get()
-        .ok_or_else(|| anyhow!("LLM not initialized"))?
-        .generate(&prompt, max_tokens, temperature)?;
+    let mut llm_guard = LOCAL_LLM.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+    let llm = llm_guard.as_mut().ok_or_else(|| anyhow!("LLM not initialized"))?;
 
+    let response = llm.generate(query, max_tokens, temperature)?;
     parse_ai_response(&response)
 }
 
@@ -687,34 +682,11 @@ async fn get_local_error(
     stderr: &str,
     config: &Config,
 ) -> Result<String> {
-    let shell_type = ShellType::detect();
-    let shell_name = shell_type.get_shell_name();
-
-    let prompt = format!(
-        r#"<|im_start|>system
-You are a shell command assistant. Briefly explain command results.
-<|im_end|>
-<|im_start|>user
-{} command: {}
-Output: {}
-Error: {}
-Explain briefly.
-<|im_end|>
-<|im_start|>assistant
-"#,
-        shell_name, command, stdout, stderr
-    );
-
     // Initialize LLM if not already done
-    let _ = LOCAL_LLM.get_or_try_init(|| LocalLLM::load(config))?;
+    init_local_llm(config)?;
 
-    let max_tokens = config.ai.max_tokens.min(200);
-    let temperature = config.ai.temperature;
+    let mut llm_guard = LOCAL_LLM.lock().map_err(|e| anyhow!("Lock error: {}", e))?;
+    let llm = llm_guard.as_mut().ok_or_else(|| anyhow!("LLM not initialized"))?;
 
-    let response = LOCAL_LLM
-        .get()
-        .ok_or_else(|| anyhow!("LLM not initialized"))?
-        .generate(&prompt, max_tokens, temperature)?;
-
-    Ok(response.trim().to_string())
+    llm.analyze_error(command, stdout, stderr)
 }

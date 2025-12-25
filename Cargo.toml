@@ -1,6 +1,6 @@
 [package]
 name = "spren"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "An AI-powered shell assistant that helps with command-line operations"
 authors = ["Shubhankar Madgulkar <shubhankar2205@gmail.com>"]
@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = ["cloud"]
 cloud = []
-local = ["candle-core", "candle-nn", "candle-transformers", "hf-hub", "tokenizers", "rand"]
+local = ["candle-core", "candle-transformers", "tokenizers", "once_cell"]
 
 [dependencies]
 tokio = { version = "1.28", features = ["full"] }
@@ -28,13 +28,11 @@ dotenv = "0.15"
 toml = "0.8.19"
 dirs = "5.0.1"
 
-# Local LLM dependencies (optional)
+# Local LLM dependencies (optional) - for quantized GGUF inference
 candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
 candle-transformers = { version = "0.8", optional = true }
-hf-hub = { version = "0.3", optional = true }
 tokenizers = { version = "0.20", optional = true }
-rand = { version = "0.8", optional = true }
+once_cell = { version = "1.19", optional = true }
 
 [profile.release]
 opt-level = 3

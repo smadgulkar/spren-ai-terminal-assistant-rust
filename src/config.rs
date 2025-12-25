@@ -72,15 +72,28 @@ impl Default for AIConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum AIProvider {
-    #[default]
     Anthropic,
     OpenAI,
     Gemini,
     #[cfg(feature = "local")]
     Local,
+}
+
+// Default to Local when compiled with local feature, otherwise Anthropic
+impl Default for AIProvider {
+    fn default() -> Self {
+        #[cfg(feature = "local")]
+        {
+            AIProvider::Local
+        }
+        #[cfg(not(feature = "local"))]
+        {
+            AIProvider::Anthropic
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

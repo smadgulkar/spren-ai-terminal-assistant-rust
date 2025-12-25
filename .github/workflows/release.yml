@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -69,23 +69,38 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build with local LLM support
+        run: cargo build --release --features local --target ${{ matrix.target }}
+
+      - name: Download model files
+        run: |
+          mkdir -p models
+          # Download tokenizer from HuggingFace
+          curl -L -o models/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json"
+
+      - name: Download GGUF model (from release assets or HF)
+        run: |
+          # Try to download the fine-tuned model from a known location
+          # For now, we'll use the base quantized model
+          curl -L -o models/spren-model.gguf "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" || echo "Model download failed - will need manual upload"
 
       - name: Prepare release archive (Unix)
         if: matrix.os != 'windows-latest'
         run: |
-          mkdir release
+          mkdir -p release
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release/
-          cp README.md LICENSE release/
+          cp -r models release/
+          cp README.md LICENSE release/ 2>/dev/null || true
           cd release
           tar czf ../${{ matrix.asset_name }} .
           cd ..
+
       - name: Prepare release archive (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           mkdir release
           Copy-Item "target\${{ matrix.target }}\release\${{ matrix.artifact_name }}" -Destination "release\"
+          Copy-Item -Recurse "models" -Destination "release\"
           if (Test-Path "README.md") { Copy-Item "README.md" -Destination "release\" }
           if (Test-Path "LICENSE") { Copy-Item "LICENSE" -Destination "release\" }
           Compress-Archive -Path "release\*" -DestinationPath "${{ matrix.asset_name }}"
