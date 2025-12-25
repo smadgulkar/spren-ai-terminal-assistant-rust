@@ -21,7 +21,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Check if release exists
           if ! gh release view ${{ github.ref_name }} &>/dev/null; then
             echo "Creating new release..."
             gh release create ${{ github.ref_name }} \
@@ -73,16 +72,15 @@ jobs:
         run: cargo build --release --features local --target ${{ matrix.target }}
 
       - name: Download model files
+        shell: bash
         run: |
           mkdir -p models
-          # Download tokenizer from HuggingFace
+          echo "Downloading tokenizer..."
           curl -L -o models/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json"
-
-      - name: Download GGUF model (from release assets or HF)
-        run: |
-          # Try to download the fine-tuned model from a known location
-          # For now, we'll use the base quantized model
-          curl -L -o models/spren-model.gguf "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf" || echo "Model download failed - will need manual upload"
+          echo "Downloading spren model from HuggingFace..."
+          curl -L -o models/spren-model.gguf "https://huggingface.co/smadgulkar/spren-shell-model/resolve/main/spren-model.gguf"
+          echo "Model files downloaded:"
+          ls -lh models/
 
       - name: Prepare release archive (Unix)
         if: matrix.os != 'windows-latest'
@@ -94,6 +92,8 @@ jobs:
           cd release
           tar czf ../${{ matrix.asset_name }} .
           cd ..
+          echo "Archive contents:"
+          tar tzf ${{ matrix.asset_name }}
 
       - name: Prepare release archive (Windows)
         if: matrix.os == 'windows-latest'
@@ -108,7 +108,7 @@ jobs:
       - name: Upload Release Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          # Delete existing asset if it exists to allow re-upload
           gh release delete-asset ${{ github.ref_name }} ${{ matrix.asset_name }} --yes || true
           gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }}
